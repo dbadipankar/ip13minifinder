@@ -1,0 +1,54 @@
+name: Cashify watcher
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"    # every 15 min (UTC). Use "*/30" to halve the load.
+  workflow_dispatch:           # manual "Run workflow" button
+
+permissions:
+  contents: write              # to commit state.json back
+
+concurrency:
+  group: cashify-watch
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: |
+          pip install requests playwright
+          playwright install --with-deps chromium
+
+      - name: Check listing
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          # ---- YOUR CRITERIA ----
+          # Comma-separated = "any of these". Leave blank = accept anything.
+          # A listing must match ALL FOUR lines to trigger an alert.
+          WANT_CONDITION: "superb,good"
+          WANT_STORAGE: "128,256"
+          WANT_COLOR: "red,starlight,blue,midnight,green"
+          MAX_PRICE: "0"         # rupee cap, e.g. "32000". 0 = alert at any price
+
+          # If Cashify doesn't state a colour, alert anyway (1) or skip it (0).
+          ALERT_ON_UNKNOWN_COLOR: "0"
+        run: python monitor.py
+        continue-on-error: true
+
+      - name: Persist state
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add state.json || true
+          git diff --staged --quiet || git commit -m "state update [skip ci]"
+          git push || true
