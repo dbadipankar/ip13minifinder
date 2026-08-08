@@ -23,9 +23,19 @@ PRODUCT_URL = os.getenv(
     "PRODUCT_URL",
     "https://www.cashify.in/buy-refurbished-mobile-phones/renewed-apple-iphone-13-mini",
 )
-WANT_CONDITION = os.getenv("WANT_CONDITION", "superb").lower()
+def parse_list(raw: str) -> list[str]:
+    """'Superb, Good' -> ['superb', 'good']. Blank -> [] meaning 'any'."""
+    return [x.strip().lower() for x in raw.split(",") if x.strip()]
+
+
+# Each accepts a comma-separated list. Blank = accept anything.
+WANT_CONDITION = parse_list(os.getenv("WANT_CONDITION", "superb,good"))
+WANT_STORAGE = parse_list(os.getenv("WANT_STORAGE", "128,256"))
+WANT_COLOR = parse_list(os.getenv("WANT_COLOR", ""))
 MAX_PRICE = int(os.getenv("MAX_PRICE", "0"))          # rupees; 0 = no cap
-WANT_STORAGE = os.getenv("WANT_STORAGE", "").strip()  # e.g. "128"; blank = any
+
+# If a listing doesn't state its colour, alert anyway rather than stay silent.
+ALERT_ON_UNKNOWN_COLOR = os.getenv("ALERT_ON_UNKNOWN_COLOR", "1") not in ("0", "false")
 
 TG_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TG_CHAT = os.getenv("TELEGRAM_CHAT_ID")
@@ -174,7 +184,15 @@ def find_variants(data) -> list[dict]:
                 storage = str(v).strip()
                 break
 
-        key = (cond.lower(), price, storage)
+        color = ""
+        for k in ("color", "colour", "colorname", "colourname",
+                  "variantcolor", "shade"):
+            v = lower.get(k)
+            if isinstance(v, str) and v.strip():
+                color = v.strip()
+                break
+
+        key = (cond.lower(), price, storage, color.lower())
         if key in seen:
             continue
         seen.add(key)
@@ -182,21 +200,37 @@ def find_variants(data) -> list[dict]:
             "condition": cond,
             "price": price,
             "storage": storage,
+            "color": color,
             "in_stock": True if stock is None else stock,
             "stock_known": stock is not None,
         })
     return variants
 
 
+def any_match(wanted: list[str], field: str) -> bool:
+    """True if the field contains any wanted term. Empty list = accept all."""
+    if not wanted:
+        return True
+    haystack = field.lower().replace(" ", "")
+    return any(w.replace(" ", "") in haystack for w in wanted)
+
+
 def matches(v: dict) -> bool:
-    if WANT_CONDITION not in v["condition"].lower():
-        return False
     if not v["in_stock"]:
         return False
     if MAX_PRICE and v["price"] > MAX_PRICE:
         return False
-    if WANT_STORAGE and WANT_STORAGE not in v["storage"].replace(" ", ""):
+    if not any_match(WANT_CONDITION, v["condition"]):
         return False
+    if not any_match(WANT_STORAGE, v["storage"]):
+        return False
+
+    # Colour: if Cashify didn't state one, don't silently drop the listing.
+    if WANT_COLOR:
+        if not v["color"]:
+            return ALERT_ON_UNKNOWN_COLOR
+        if not any_match(WANT_COLOR, v["color"]):
+            return False
     return True
 
 
@@ -272,27 +306,34 @@ def main() -> int:
     state["fail_streak"] = 0
 
     hits = [v for v in variants if matches(v)]
-    print(f"Found {len(variants)} variants, {len(hits)} matching "
-          f"(condition~'{WANT_CONDITION}', cap={MAX_PRICE or 'none'}).")
+    print(f"Criteria: condition={WANT_CONDITION or 'any'} | "
+          f"storage={WANT_STORAGE or 'any'} | color={WANT_COLOR or 'any'} | "
+          f"cap={MAX_PRICE or 'none'}")
+    print(f"Found {len(variants)} variants, {len(hits)} matching.")
     for v in variants:
         flag = "?" if not v["stock_known"] else ("in" if v["in_stock"] else "OUT")
-        print(f"  - {v['condition']:<14} Rs.{v['price']:<8} "
-              f"{v['storage']:<10} stock={flag}")
+        mark = "MATCH" if matches(v) else "     "
+        print(f"  {mark} {v['condition']:<14} Rs.{v['price']:<8} "
+              f"{v['storage']:<10} {(v['color'] or '-'):<12} stock={flag}")
 
-    fingerprint = sorted(f"{v['condition']}|{v['storage']}|{v['price']}"
-                         for v in hits)
+    fingerprint = sorted(
+        f"{v['condition']}|{v['storage']}|{v['color']}|{v['price']}"
+        for v in hits)
     prev = state.get("last_hits", [])
 
     if hits and fingerprint != prev:
-        lines = [f"🔔 <b>iPhone 13 mini — {WANT_CONDITION.title()} available</b>", ""]
+        lines = ["🔔 <b>iPhone 13 mini — match found on Cashify</b>", ""]
         for v in hits:
-            store = f" · {v['storage']}" if v["storage"] else ""
-            lines.append(f"• {v['condition']}{store} — <b>₹{v['price']:,}</b>")
+            bits = [v["condition"]]
+            if v["storage"]:
+                bits.append(v["storage"])
+            bits.append(v["color"] if v["color"] else "colour not stated")
+            lines.append(f"• {' · '.join(bits)} — <b>₹{v['price']:,}</b>")
         lines += ["", PRODUCT_URL]
         notify("\n".join(lines))
     elif not hits and prev:
-        notify(f"ℹ️ {WANT_CONDITION.title()} iPhone 13 mini is no longer "
-               f"listed at your criteria.")
+        notify("ℹ️ No iPhone 13 mini currently matches your criteria "
+               "(condition/storage/colour/price).")
 
     state["last_hits"] = fingerprint
     state["last_ok"] = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
