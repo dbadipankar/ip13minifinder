@@ -125,84 +125,132 @@ def walk(obj):
             yield from walk(v)
 
 
+GRADE_WORDS = ("superb", "good", "fair", "excellent", "like new",
+               "best value", "pristine", "flawless")
+
+
+def _text_of(v):
+    """schema.org fields are sometimes a string, sometimes a nested object."""
+    if isinstance(v, str):
+        return v
+    if isinstance(v, dict):
+        for k in ("name", "value", "@id", "url"):
+            if isinstance(v.get(k), str):
+                return v[k]
+    return ""
+
+
+def _grade_from_product(d: dict, blob: str) -> str:
+    """Grade lives in additionalProperty, or is embedded in the name string."""
+    props = d.get("additionalProperty")
+    if isinstance(props, dict):
+        props = [props]
+    if isinstance(props, list):
+        for p in props:
+            if not isinstance(p, dict):
+                continue
+            ident = f"{p.get('propertyID', '')} {p.get('name', '')}".lower()
+            if "grade" in ident or "condition" in ident:
+                val = _text_of(p.get("value"))
+                if val.strip():
+                    return val.strip()
+
+    # Fall back to scanning the product name / description text.
+    low = blob.lower()
+    for w in GRADE_WORDS:
+        if re.search(r"\b" + re.escape(w) + r"\b", low):
+            return w.title()
+    return ""
+
+
+def _storage_from_text(blob: str) -> str:
+    """'4 GB / 128 GB' -> '128 GB'. RAM comes first, storage second."""
+    caps = re.findall(r"(\d+)\s*(GB|TB)\b", blob, re.I)
+    if not caps:
+        return ""
+    if len(caps) >= 2:
+        num, unit = caps[1]          # second capacity = storage
+    else:
+        num, unit = caps[0]
+    return f"{num} {unit.upper()}"
+
+
+def _offer_details(d: dict):
+    """Pull price + availability out of the nested offers object."""
+    offers = d.get("offers")
+    if isinstance(offers, dict):
+        offers = [offers]
+    if not isinstance(offers, list):
+        return None, None
+
+    for o in offers:
+        if not isinstance(o, dict):
+            continue
+        # An AggregateOffer wraps real offers inside it.
+        inner = o.get("offers")
+        if isinstance(inner, (list, dict)):
+            p, a = _offer_details({"offers": inner})
+            if p is not None:
+                return p, a
+
+        raw = o.get("price", o.get("lowPrice"))
+        price = None
+        if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+            price = int(raw)
+        elif isinstance(raw, str):
+            digits = re.sub(r"[^\d.]", "", raw)
+            if digits:
+                try:
+                    price = int(float(digits))
+                except ValueError:
+                    price = None
+
+        avail = _text_of(o.get("availability"))
+        if price is not None and 1000 < price < 500000:
+            return price, avail
+    return None, None
+
+
 def find_variants(data) -> list[dict]:
-    """Any dict carrying a condition/grade label plus a plausible price."""
+    """Read schema.org Product variants (Cashify's actual format)."""
     variants, seen = [], set()
 
-    cond_keys = ("condition", "conditionname", "grade", "gradename",
-                 "variantname", "quality")
-    price_keys = ("sellingprice", "saleprice", "price", "offerprice",
-                  "finalprice", "discountedprice", "mrp")
-    stock_keys = ("instock", "isinstock", "available", "isavailable",
-                  "availability", "stock", "quantity", "soldout")
-
     for d in walk(data):
-        lower = {str(k).lower(): v for k, v in d.items()}
-
-        cond = None
-        for k in cond_keys:
-            v = lower.get(k)
-            if isinstance(v, str) and v.strip():
-                cond = v.strip()
-                break
-        if not cond:
+        if not isinstance(d, dict):
+            continue
+        if "Product" not in str(d.get("@type", "")):
             continue
 
-        price = None
-        for k in price_keys:
-            v = lower.get(k)
-            if isinstance(v, (int, float)) and 1000 < v < 500000:
-                price = int(v)
-                break
-            if isinstance(v, str) and re.fullmatch(r"[\d,]+(\.\d+)?", v.strip()):
-                n = int(float(v.replace(",", "")))
-                if 1000 < n < 500000:
-                    price = n
-                    break
+        price, avail = _offer_details(d)
         if price is None:
             continue
 
-        stock = None
-        for k in stock_keys:
-            if k in lower:
-                v = lower[k]
-                if isinstance(v, bool):
-                    stock = (not v) if k == "soldout" else v
-                elif isinstance(v, (int, float)):
-                    stock = v > 0
-                elif isinstance(v, str):
-                    s = v.strip().lower()
-                    stock = not any(x in s for x in
-                                    ("false", "outofstock", "out of stock",
-                                     "sold out", "unavailable"))
-                break
+        name = d.get("name", "") if isinstance(d.get("name"), str) else ""
+        desc = d.get("description", "") if isinstance(d.get("description"), str) else ""
+        blob = f"{name} {desc}"
 
-        storage = ""
-        for k in ("storage", "internalmemory", "memory", "rom", "variant"):
-            v = lower.get(k)
-            if isinstance(v, (str, int)) and str(v).strip():
-                storage = str(v).strip()
-                break
+        grade = _grade_from_product(d, blob)
+        storage = _storage_from_text(blob)
+        color = _text_of(d.get("color")).strip()
 
-        color = ""
-        for k in ("color", "colour", "colorname", "colourname",
-                  "variantcolor", "shade"):
-            v = lower.get(k)
-            if isinstance(v, str) and v.strip():
-                color = v.strip()
-                break
+        if avail:
+            in_stock = "instock" in avail.lower().replace(" ", "")
+            stock_known = True
+        else:
+            in_stock, stock_known = True, False
 
-        key = (cond.lower(), price, storage, color.lower())
+        key = (grade.lower(), price, storage, color.lower())
         if key in seen:
             continue
         seen.add(key)
         variants.append({
-            "condition": cond,
+            "condition": grade,
             "price": price,
             "storage": storage,
             "color": color,
-            "in_stock": True if stock is None else stock,
-            "stock_known": stock is not None,
+            "in_stock": in_stock,
+            "stock_known": stock_known,
+            "sku": d.get("sku", ""),
         })
     return variants
 
@@ -220,12 +268,16 @@ def matches(v: dict) -> bool:
         return False
     if MAX_PRICE and v["price"] > MAX_PRICE:
         return False
-    if not any_match(WANT_CONDITION, v["condition"]):
-        return False
+
+    # If Cashify didn't publish a grade for this listing, don't drop it
+    # silently - surface it rather than risk missing the phone.
+    if WANT_CONDITION and v["condition"]:
+        if not any_match(WANT_CONDITION, v["condition"]):
+            return False
+
     if not any_match(WANT_STORAGE, v["storage"]):
         return False
 
-    # Colour: if Cashify didn't state one, don't silently drop the listing.
     if WANT_COLOR:
         if not v["color"]:
             return ALERT_ON_UNKNOWN_COLOR
@@ -309,11 +361,13 @@ def main() -> int:
     print(f"Criteria: condition={WANT_CONDITION or 'any'} | "
           f"storage={WANT_STORAGE or 'any'} | color={WANT_COLOR or 'any'} | "
           f"cap={MAX_PRICE or 'none'}")
+    grades = sorted({v["condition"] or "(none)" for v in variants})
+    print(f"Grades published by Cashify: {grades}")
     print(f"Found {len(variants)} variants, {len(hits)} matching.")
     for v in variants:
         flag = "?" if not v["stock_known"] else ("in" if v["in_stock"] else "OUT")
         mark = "MATCH" if matches(v) else "     "
-        print(f"  {mark} {v['condition']:<14} Rs.{v['price']:<8} "
+        print(f"  {mark} {(v['condition'] or '-'):<14} Rs.{v['price']:<8} "
               f"{v['storage']:<10} {(v['color'] or '-'):<12} stock={flag}")
 
     fingerprint = sorted(
