@@ -17,9 +17,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -41,7 +41,7 @@ jobs:
           MAX_PRICE: "0"         # rupee cap, e.g. "32000". 0 = alert at any price
 
           # If Cashify doesn't state a colour, alert anyway (1) or skip it (0).
-          ALERT_ON_UNKNOWN_COLOR: "0"
+          ALERT_ON_UNKNOWN_COLOR: "1"
         run: python monitor.py
         continue-on-error: true
 
