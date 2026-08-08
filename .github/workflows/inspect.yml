@@ -1,0 +1,35 @@
+name: Inspect Cashify page
+
+# Manual only - no schedule. Sends no alerts, changes nothing.
+on:
+  workflow_dispatch:
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: |
+          pip install requests playwright
+          playwright install --with-deps chromium
+
+      - name: Inspect
+        run: python inspect_page.py
+
+      - name: Upload captured page data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cashify-page-data
+          path: |
+            page.html
+            data.json
+          if-no-files-found: warn
+          retention-days: 7
