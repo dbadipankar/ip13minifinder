@@ -1,5 +1,9 @@
 {
   "fail_streak": 0,
-  "last_hits": [],
-  "last_ok": "2026-08-14 05:53:55 UTC"
+  "last_hits": [
+    "Good|256 GB|Midnight|31899",
+    "Superb|128 GB|Midnight|30199",
+    "Superb|256 GB|Blue|33199"
+  ],
+  "last_ok": "2026-08-14 07:04:16 UTC"
 }
