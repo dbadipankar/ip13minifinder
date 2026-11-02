@@ -1,8 +1,10 @@
 {
   "fail_streak": 0,
   "last_hits": [
+    "Good|128 GB|Green|31299",
+    "Good|128 GB|Starlight|31299",
     "Good|256 GB|Blue|34399",
-    "Superb|256 GB|Starlight|35799"
+    "Superb|256 GB|Red|35799"
   ],
-  "last_ok": "2026-11-02 09:43:37 UTC"
+  "last_ok": "2026-11-02 19:49:19 UTC"
 }
